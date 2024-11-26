@@ -1,0 +1,414 @@
+ultrasound new .h
+/*
+ * ultrasound.h
+ *
+ *  Created on: Nov 20, 2024
+ *      Author: AHMED ABDELAZIZ
+ */
+
+#ifndef INC_ULTRASOUND_H_
+#define INC_ULTRASOUND_H_
+
+#include <stdint.h>
+
+typedef enum eedges {rising_Edge, falling_Edge, unknown_Edge} edges_E;
+
+#define HC_SR04_ECHOCAPTURE_RESET     0U
+#define HC_SR04_ECHOCAPTURE_COMPLETE  1U
+#define HC_SR04_UART_BUFFER_SIZE       100U // 100 characters
+
+class UltraSound {
+public:
+    UltraSound();
+    void Init(); // Initialize the sensor and peripherals
+    void Read_Distance(); // Read the distance from the sensor
+    void DelayMicroseconds(uint32_t uSec); // Microsecond delay function
+    ~UltraSound(); // Destructor
+
+private:
+    uint8_t ecFlag; // Echo capture flag
+    edges_E edgeDirection; // Edge direction for capture
+    uint32_t risingEdgeCounterValue; // Time of rising edge
+    uint32_t fallingEdgeCounterValue; // Time of falling edge
+    char uartBuffer[HC_SR04_UART_BUFFER_SIZE]; // Buffer for UART transmission
+
+#ifdef HC_SR04_USE_FLOAT
+    const float speedOfSoundAir = 0.0343 / 2; // Speed of sound in cm/microsecond
+    float distance; // Measured distance
+#else
+    const uint8_t speedOfSoundAir = 35; // Speed of sound in scaled units
+    uint16_t distance; // Measured distance
+#endif
+
+    void UART_Transmit(const char* data); // Transmit data over UART
+    void GPIO_Init(); // Initialize GPIO
+    void Timer_Init(); // Initialize Timer
+};
+
+#endif /* INC_ULTRASOUND_H_ */
+
+ultrasound new .cpp
+/*
+ * ultrasound.cpp
+ *
+ *  Created on: Nov 20, 2024
+ *      Author: AHMED ABDELAZIZ
+ */
+
+#include "ultrasound.h"
+
+// Define the register addresses for the STM32F103C8T6
+#define RCC_APB2ENR   (*((volatile uint32_t *)0x40021018)) // RCC APB2 peripheral clock enable register
+#define GPIOA_CRL     (*((volatile uint32_t *)0x40010800)) // GPIOA configuration register low
+#define GPIOA_ODR     (*((volatile uint32_t *)0x4001080C)) // GPIOA output data register
+#define TIM2_CR1      (*((volatile uint32_t *)0x40000000)) // TIM2 control register 1
+#define TIM2_PSC      (*((volatile uint32_t *)0x40000028)) // TIM2 prescaler
+#define TIM2_ARR      (*((volatile uint32_t *)0x4000002C)) // TIM2 auto-reload register
+#define TIM2_CCR1     (*((volatile uint32_t *)0x40000034)) // TIM2 capture/compare register 1
+#define TIM2_SR       (*((volatile uint32_t *)0x40000010)) // TIM2 status register
+#define TIM2_EGR      (*((volatile uint32_t *)0x40000014)) // TIM2 event generation register
+
+#define USART2_BASE   0x40004400
+#define USART2_SR     (*((volatile uint32_t *)(USART2_BASE + 0x00))) // USART2 status register
+#define USART2_DR     (*((volatile uint32_t *)(USART2_BASE + 0x04))) // USART2 data register
+#define USART2_BRR    (*((volatile uint32_t *)(USART2_BASE + 0x08))) // USART2 baud rate register
+#define USART2_CR1    (*((volatile uint32_t *)(USART2_BASE + 0x0C))) // USART2 control register 1
+
+// Constructor
+UltraSound::UltraSound() {
+    ecFlag = HC_SR04_ECHOCAPTURE_RESET;
+    edgeDirection = rising_Edge;
+    distance = 0;
+    Init(); // Initialize the sensor and peripherals
+}
+
+// Initialize the sensor and peripherals
+void UltraSound::Init() 
+{
+    GPIO_Init(); // Initialize GPIO
+    Timer_Init(); // Initialize Timer
+
+    // Initialize UART2 for 115200 baud rate
+    RCC_APB2ENR |= (1 << 2); // Enable GPIOA clock
+    RCC_APB1ENR |= (1 << 17); // Enable USART2
+     // Configure GPIO for USART2 TX (PA2) and RX (PA3)
+    GPIOA_CRL &= ~((0xF << (2 * 2))); // Clear PA2 and PA3 configuration
+    GPIOA_CRL |= (0xB << (2 * 2)); // PA2 as alternate function push-pull, PA3 as input floating
+
+    // Set the baud rate for USART2
+    USART2_BRR = 0x1D4C; // Assuming 72 MHz clock, for 115200 baud rate
+    USART2_CR1 |= (1 << 13); // Enable USART2
+}
+
+// Read the distance from the ultrasonic sensor
+void UltraSound::Read_Distance() {
+    // Trigger the ultrasonic sensor
+    GPIOA_ODR |= (1 << 1); // Set Trigger pin high (PA1)
+    DelayMicroseconds(10); // Wait for 10 microseconds
+    GPIOA_ODR &= ~(1 << 1); // Set Trigger pin low
+
+    // Wait for echo to be received
+    ecFlag = HC_SR04_ECHOCAPTURE_RESET; // Reset the echo capture flag
+    while (ecFlag == HC_SR04_ECHOCAPTURE_RESET) {
+        // Wait for echo to be captured
+    }
+
+    // Calculate the distance
+    if (fallingEdgeCounterValue > risingEdgeCounterValue) {
+        #ifdef HC_SR04_USE_FLOAT
+            distance = ((fallingEdgeCounterValue - risingEdgeCounterValue) * speedOfSoundAir);
+        #else
+            distance = ((fallingEdgeCounterValue - risingEdgeCounterValue) * speedOfSoundAir) >> 1; // Divide by 2
+        #endif
+    } else {
+        distance = 0; // Invalid distance
+    }
+
+    // Prepare the distance string for UART transmission
+    #ifdef HC_SR04_USE_FLOAT
+        sprintf(uartBuffer, "Distance = %.1f cm\r\n", distance);
+    #else
+        sprintf(uartBuffer, "Distance = %d cm\r\n", distance);
+    #endif
+
+    // Transmit the distance over UART
+    UART_Transmit(uartBuffer);
+}
+
+// Transmit data over UART
+void UltraSound::UART_Transmit(const char* data) {
+    while (*data) {
+        while (!(USART2_SR & (1 << 7))); // Wait until TXE (Transmit data register empty) is set
+        USART2_DR = *data++; // Transmit the data
+    }
+}
+
+// Microsecond delay function
+void UltraSound::DelayMicroseconds(uint32_t uSec) {
+    // Assuming a 72 MHz clock, 1 cycle = 1/72 MHz = 13.89 ns
+    // For 1 microsecond delay, we need approximately 72 cycles
+    for (uint32_t i = 0; i < uSec; i++) {
+        for (volatile int j = 0; j < 72; j++); // Simple loop for delay
+    }
+}
+
+// Destructor
+UltraSound::~UltraSound() {
+    // Cleanup if necessary (e.g., stopping timers, disabling peripherals)
+}
+
+// Timer initialization
+void UltraSound::Timer_Init() {
+    // Enable clock for TIM2
+    RCC_APB1ENR |= (1 << 0); // Enable TIM2 clock
+
+    // Set prescaler and auto-reload value for measuring time
+    TIM2_PSC = 71; // Prescaler for 1 MHz timer (72 MHz / 72 = 1 MHz)
+    TIM2_ARR = 0xFFFF; // Maximum value for auto-reload
+    TIM2_CR1 |= (1 << 0); // Enable TIM2
+}
+
+// External interrupt handler for TIM2 input capture
+extern "C" void TIM2_IRQHandler(void) {
+    if (TIM2_SR & (1 << 1)) { // Check if the capture/compare interrupt flag is set
+        if (edgeDirection == rising_Edge) {
+            risingEdgeCounterValue = TIM2_CCR1; // Capture rising edge
+            edgeDirection = falling_Edge; // Switch to falling edge
+        } else {
+            fallingEdgeCounterValue = TIM2_CCR1; // Capture falling edge
+            edgeDirection = rising_Edge; // Switch back to rising edge
+            ecFlag = HC_SR04_ECHOCAPTURE_COMPLETE; // Set flag to indicate capture is complete
+        }
+        TIM2_SR &= ~(1 << 1); // Clear interrupt flag
+    }
+}
+main.cpp:
+#include "ultrasound.h"
+
+// Define the register addresses for the STM32F103C8T6
+#define RCC_APB2ENR   (*((volatile uint32_t *)0x40021018)) // RCC APB2 peripheral clock enable register
+#define GPIOA_CRL     (*((volatile uint32_t *)0x40010800)) // GPIOA configuration register low
+#define GPIOA_ODR     (*((volatile uint32_t *)0x4001080C)) // GPIOA output data register
+
+// Global instance of the UltraSound class
+UltraSound ultrasonicSensor;
+
+int main(void) {
+    // Enable clock for GPIOA
+    RCC_APB2ENR |= (1 << 2); // Enable GPIOA clock
+
+    // Initialize the ultrasonic sensor
+    ultrasonicSensor.Init();
+
+    // Infinite loop
+    while (1) {
+        ultrasonicSensor.Read_Distance(); // Read the distance from the ultrasonic sensor
+        for (volatile int i = 0; i < 100000; i++); // Delay loop (adjust as necessary)
+    }
+}
+
+// External interrupt handler for TIM2
+extern "C" void TIM2_IRQHandler(void) {
+    ultrasonicSensor.TIM2_IRQHandler(); // Call the ultrasonic sensor's interrupt handler
+}
+-----------------------------------------------------------------------------------------------------
+// Encoder
+void Encoder_Init(void) 
+{
+    // Configure GPIO pins for encoder inputs
+    // Set pins as input with pull-up resistors
+    void Encoder_Init(void) {
+    // Enable GPIOB clock
+    RCC->APB2ENR |= RCC_APB2ENR_IOPBEN;
+
+    // Configure PB0 (Encoder A) and PB1 (Encoder B) as input with pull-up resistors
+    GPIOB->CRL &= ~(GPIO_CRL_CNF0 | GPIO_CRL_CNF1 | GPIO_CRL_MODE0 | GPIO_CRL_MODE1);
+    GPIOB->CRL |= (GPIO_CRL_CNF0_1 | GPIO_CRL_CNF1_1); // Input with pull-up
+    GPIOB->ODR |= (1 << 0) | (1 << 1); // Set pull-up resistors
+}
+
+volatile int encoderCount = 0;
+
+void HAL_GPIO_EXTI_Callback(uint16_t GPIO_Pin) {
+    if (GPIO_Pin == ENCODER_A_PIN) {
+        // Read the state of the B pin to determine direction
+        if (HAL_GPIO_ReadPin(ENCODER_B_PORT, ENCODER_B_PIN)) {
+            encoderCount++; // Clockwise
+        } else {
+            encoderCount--; // Counter-clockwise
+        }
+    }
+}
+void EXTI0_IRQHandler(void) {
+    // Check if the interrupt was triggered by Encoder A
+    if (EXTI->PR & (1 << 0)) {
+        // Read the state of Encoder B to determine direction
+        if (GPIOB->IDR & (1 << 1)) { // If Encoder B is high
+            encoderCount++; // Clockwise rotation
+        } else {
+            encoderCount--; // Counter-clockwise rotation
+        }
+        
+        // Clear the interrupt flag
+        EXTI->PR |= (1 << 0);
+    }
+}
+
+void EXTI1_IRQHandler(void) {
+    // Check if the interrupt was triggered by Encoder B
+    if (EXTI->PR & (1 << 1)) {
+        // Read the state of Encoder A to determine direction
+        if (GPIOB->IDR & (1 << 0)) { // If Encoder A is high
+            encoderCount--; // Counter-clockwise rotation
+        } else {
+            encoderCount++; // Clockwise rotation
+        }
+        
+        // Clear the interrupt flag
+        EXTI->PR |= (1 << 1);
+    }
+}
+----------------------------------------------------------------------------------------------------
+----------------------------------------------------------------------------------------------------
+//Mics
+mics.h:
+class Mics {
+public:
+    Mics(GPIO_TypeDef* port, uint16_t pins);
+    int detectSoundSource();
+        float calculateAngle(int micIndex1, int micIndex2, float level1, float level2);
+private:
+    GPIO_TypeDef* _port;
+    uint16_t _pins; // Mask for microphone pins
+};
+
+mics.cpp:
+#include "mics.h"
+
+Mics::Mics(GPIO_TypeDef* port, uint16_t pins) : _port(port), _pins(pins) {}
+
+int Mics::detectSoundSource() {
+    for (int i = 0; i < 6; i++) {
+        if (_port->IDR & (1 << (i + _pins))) { // Check if microphone i is triggered
+            return i; // Return the index of the triggered microphone
+        }
+    }
+    return -1; // No microphone triggered
+}
+float Mics::calculateAngle(int micIndex1, int micIndex2, float level1, float level2) {
+    float angle1 = micIndex1 * 60.0; // Base angle for micIndex1
+    float angle2 = micIndex2 * 60.0; // Base angle for micIndex2
+    return angle1 + ((level2 - level1) / (level1 + level2)) * (angle2 - angle1);
+}
+--------------
+    // Calculate the angle based on the positions of the microphones
+    if (firstMicIndex == -1 || secondMicIndex == -1) {
+        return -1; // No microphones triggered
+    }
+
+    // Calculate the angle based on the positions of the microphones
+    int angle = 0;
+    if (firstMicIndex == secondMicIndex) {
+        angle = (firstMicIndex * 60); // If the same mic is triggered, return its angle
+    } else {
+        // Calculate the average angle between the two microphones
+        angle = (firstMicIndex + secondMicIndex) * 30; // 30 degrees between each mic
+        angle = angle / 2; // Average the angle
+    }
+
+    return angle; // Return the calculated angle
+}
+********************************************************
+#include "mics.h"
+
+Mics::Mics(GPIO_TypeDef* port, uint16_t pins) : _port(port), _pins(pins) {}
+
+int Mics::detectSoundSource() {
+    int firstMicIndex = -1;
+    int secondMicIndex = -1;
+
+    // Check which microphones are triggered
+    for (int i = 0; i < 6; i++) {
+        if (_port->IDR & (1 << (i + _pins))) { // Check if microphone i is triggered
+            if (firstMicIndex == -1) {
+                firstMicIndex = i; // First triggered microphone
+            } else {
+                secondMicIndex = i; // Second triggered microphone
+                break; // We only need the first two triggered microphones
+            }
+        }
+    }
+
+    // Calculate the angle based on the positions of the microphones
+    if (firstMicIndex == -1 || secondMicIndex == -1) {
+        return -1; // No microphones triggered
+    }
+
+    // Calculate the angle based on the positions of the microphones
+    int angle = 0;
+    if (firstMicIndex == secondMicIndex) {
+        angle = (firstMicIndex * 60); // If the same mic is triggered, return its angle
+    } else {
+        // Calculate the average angle between the two microphones
+        angle = (firstMicIndex + secondMicIndex) * 30; // 30 degrees between each mic
+        angle = angle / 2; // Average the angle
+    }
+
+    return angle; // Return the calculated angle
+}
+    while (1) {
+        int angle = mics.calculateAngle(); // Calculate the angle based on microphone input
+
+        if (angle != -1) {
+            float targetAngle = static_cast<float>(angle); // Convert to float for precision
+            turnToAngle(targetAngle); // Turn to the target angle
+        }
+        delay(100); // Small delay to avoid rapid triggering
+    }
+}
+
+void turnToAngle(float targetAngle) {
+    float currentAngle = mpu.getAngle(); // Get current angle from MPU6050
+    while (fabs(currentAngle - targetAngle) > 1.0) { // Check if within 1 degree
+        if (currentAngle < targetAngle) {
+            Motor_Right(); // Turn right
+        } else {
+            Motor_Left(); // Turn left
+        }
+        currentAngle = mpu.getAngle(); // Update current angle
+    }
+    // Stop motors after reaching the target angle
+    // Add code to stop motors here
+}
+********************************************************
+---------------
+example of initiating:
+
+Mics mics(GPIOA, 0); // Initialize Mics with GPIOA and starting pin 0
+
+       while (1) {
+        int micIndex = mics.detectSoundSource(); // Detect sound source
+
+        if (micIndex != -1) {
+            float targetAngle = micIndex * 60.0; // Target angle based on mic index
+            float currentAngle = mpu.getAngle(); // Get current angle from MPU6050
+            turnToAngle(targetAngle); // Turn to the target angle
+        }
+        delay(100); // Small delay to avoid rapid triggering
+    }
+}
+
+void turnToAngle(float targetAngle) {
+    float currentAngle = mpu.getAngle(); // Get current angle from MPU6050
+    while (fabs(currentAngle - targetAngle) > 1.0) { // Check if within 1 degree
+        if (currentAngle < targetAngle) {
+            Motor_Right(); // Turn right
+        } else {
+            Motor_Left(); // Turn left
+        }
+        currentAngle = mpu.getAngle(); // Update current angle
+    }
+    // Stop motors after reaching the target angle
+    // Add code to stop motors here
+}
+---------------------------------------------------------------------------

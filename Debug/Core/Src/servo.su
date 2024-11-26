@@ -1,0 +1,4 @@
+../Core/Src/servo.cpp:10:1:Servo::Servo()	32	static
+../Core/Src/servo.cpp:15:7:void Servo::Servo_SetAngle(uint8_t)	24	static
+../Core/Src/servo.cpp:31:6:void Servo::lookout()	24	static
+../Core/Src/servo.cpp:46:6:void Servo::testservo()	24	static

@@ -1,0 +1,3 @@
+../Core/Src/mics.cpp:12:1:Mics::Mics(GPIO_TypeDef*, uint16_t)	1
+../Core/Src/mics.cpp:14:7:float Mics::detectSoundSource()	7
+../Core/Src/mics.cpp:62:6:void Mics::turnToAngle(float)	1

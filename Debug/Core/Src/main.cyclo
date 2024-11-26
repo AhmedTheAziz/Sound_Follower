@@ -1,0 +1,7 @@
+../Core/Src/main.cpp:158:5:int main()	2
+../Core/Inc/ultrasound.h:17:8:US_Config::~US_Config()	1
+../Core/Inc/servo.h:15:7:Servo::~Servo()	1
+../Core/Inc/motor.h:15:8:Moto_Config::~Moto_Config()	1
+../Core/Src/main.cpp:201:1:void __static_initialization_and_destruction_0(int, int)	5
+../Core/Src/main.cpp:201:1:cpp)	1
+../Core/Src/main.cpp:201:1:cpp)	1
